@@ -6,7 +6,7 @@ pub fn parse(
     allocator: std.mem.Allocator,
     tmp_allocator: std.mem.Allocator,
 ) !TopLevel {
-    if (@typeInfo(TopLevel) != .Struct) @compileError("Unsupported top level type: " ++ @typeName(TopLevel));
+    if (@typeInfo(TopLevel) != .@"struct") @compileError("Unsupported top level type: " ++ @typeName(TopLevel));
 
     var self: Parser(TopLevel, @TypeOf(reader)) = .{
         .reader = reader,
@@ -28,7 +28,7 @@ fn Parser(comptime TopLevel: type, comptime Reader: type) type {
         const Self = @This();
 
         comptime {
-            std.debug.assert(@typeInfo(TopLevel) == .Struct);
+            std.debug.assert(@typeInfo(TopLevel) == .@"struct");
         }
 
         reader: Reader,
@@ -48,30 +48,30 @@ fn Parser(comptime TopLevel: type, comptime Reader: type) type {
 
         fn innerParse(self: *Self, comptime T: type) !T {
             return switch (@typeInfo(T)) {
-                .Void => blk: {
+                .void => blk: {
                     try self.skip();
                     break :blk {};
                 },
-                .Optional => |info| switch (try self.nextToken()) {
+                .optional => |info| switch (try self.nextToken()) {
                     .null => null,
                     else => |token| blk: {
                         self.peek_token = token;
                         break :blk try self.innerParse(info.child);
                     },
                 },
-                .Bool => switch (try self.nextToken()) {
+                .bool => switch (try self.nextToken()) {
                     .false => false,
                     .true => true,
                     else => error.InvalidToken,
                 },
-                .Int, .Float => try self.handleNumber(T),
-                .Enum => |info| if (info.is_exhaustive) blk: {
+                .int, .float => try self.handleNumber(T),
+                .@"enum" => |info| if (info.is_exhaustive) blk: {
                     break :blk if (@hasDecl(T, "lookup"))
                         (T.lookup.get(try self.handleString()) orelse error.InvalidEnum)
                     else
                         std.meta.stringToEnum(T, try self.handleString()) orelse error.InvalidEnum;
                 } else @enumFromInt(try self.handleNumber(info.tag_type)),
-                .Array => |info| blk: {
+                .array => |info| blk: {
                     var result: T = undefined;
                     if (try self.nextToken() != .array_begin) return error.InvalidToken;
                     for (0..info.len) |i| {
@@ -80,8 +80,8 @@ fn Parser(comptime TopLevel: type, comptime Reader: type) type {
                     if (try self.nextToken() != .array_end) return error.InvalidToken;
                     break :blk result;
                 },
-                .Pointer => |info| blk: {
-                    comptime if (info.size != .Slice) @compileError("Invalid type");
+                .pointer => |info| blk: {
+                    comptime if (info.size != .slice) @compileError("Invalid type");
 
                     break :blk switch (info.child) {
                         u8 => try self.allocator.dupe(u8, try self.handleString()),
@@ -118,7 +118,7 @@ fn Parser(comptime TopLevel: type, comptime Reader: type) type {
                         },
                     };
                 },
-                .Struct => blk: {
+                .@"struct" => blk: {
                     if (try self.nextToken() != .object_begin) return error.InvalidToken;
 
                     const map = comptime getStructMap(T);
@@ -129,7 +129,7 @@ fn Parser(comptime TopLevel: type, comptime Reader: type) type {
                             inline for (std.meta.fields(T), 0..) |field, i| {
                                 if (i == index) {
                                     switch (@typeInfo(field.type)) {
-                                        .Union => |info| {
+                                        .@"union" => |info| {
                                             inline for (info.fields) |union_field| {
                                                 if (std.mem.eql(u8, union_field.name, string)) {
                                                     @field(
@@ -209,19 +209,19 @@ fn Parser(comptime TopLevel: type, comptime Reader: type) type {
                 }
 
                 switch (@typeInfo(field.type)) {
-                    .Optional => |info| if (@typeInfo(info.child) == .Struct) {
+                    .optional => |info| if (@typeInfo(info.child) == .@"struct") {
                         if (@hasDecl(info.child, "name")) {
                             kvs_list = kvs_list ++ &[_]KeyValue{.{ info.child.name, index }};
                             index += 1;
                             continue;
                         }
                     },
-                    .Struct => if (@hasDecl(field.type, "name")) {
+                    .@"struct" => if (@hasDecl(field.type, "name")) {
                         kvs_list = kvs_list ++ &[_]KeyValue{.{ field.type.name, index }};
                         index += 1;
                         continue;
                     },
-                    .Union => |info| {
+                    .@"union" => |info| {
                         for (info.fields) |union_field| {
                             kvs_list = kvs_list ++ &[_]KeyValue{.{ union_field.name, index }};
                             index += 1;
@@ -301,8 +301,8 @@ fn Parser(comptime TopLevel: type, comptime Reader: type) type {
                     .number => |str| {
                         if (str.len != 0) try self.partial.appendSlice(str);
                         return switch (@typeInfo(Number)) {
-                            .Int => try std.fmt.parseInt(Number, self.partial.items, 0),
-                            .Float => try std.fmt.parseFloat(Number, self.partial.items),
+                            .int => try std.fmt.parseInt(Number, self.partial.items, 0),
+                            .float => try std.fmt.parseFloat(Number, self.partial.items),
                             else => @compileError("Not a number"),
                         };
                     },
