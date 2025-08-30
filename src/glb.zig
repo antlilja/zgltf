@@ -25,7 +25,7 @@ const Chunk = extern struct {
 
 pub fn parse(
     comptime TopLevel: type,
-    reader: anytype,
+    reader: *std.Io.Reader,
     allocator: std.mem.Allocator,
     tmp_allocator: std.mem.Allocator,
 ) !struct {
@@ -33,30 +33,28 @@ pub fn parse(
     buffer_offset: usize,
     buffer_length: u32,
 } {
-    const header = try reader.readStructEndian(Header, .little);
+    const header = try reader.takeStruct(Header, .little);
     try header.validate();
 
     const json_length, const gltf = blk: {
-        const chunk = try reader.readStructEndian(Chunk, .little);
+        const chunk = try reader.takeStruct(Chunk, .little);
         if (chunk.type != .json) return error.MissingJsonChunk;
 
-        const limited_reader = std.io.limitedReader(
-            reader,
-            chunk.length,
-        );
+        var buf: [1024]u8 = undefined;
+        var limited_reader = reader.limited(.limited(chunk.length), &buf);
 
         break :blk .{
             std.mem.alignForward(usize, chunk.length, 4),
             try json.parse(
                 TopLevel,
-                limited_reader,
+                &limited_reader.interface,
                 allocator,
                 tmp_allocator,
             ),
         };
     };
 
-    const chunk = try reader.readStructEndian(Chunk, .little);
+    const chunk = try reader.takeStruct(Chunk, .little);
     if (chunk.type != .bin) return error.MissingBinChunk;
 
     return .{

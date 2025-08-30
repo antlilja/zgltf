@@ -2,28 +2,26 @@ const std = @import("std");
 
 pub fn parse(
     comptime TopLevel: type,
-    reader: anytype,
+    reader: *std.Io.Reader,
     allocator: std.mem.Allocator,
     tmp_allocator: std.mem.Allocator,
 ) !TopLevel {
     if (@typeInfo(TopLevel) != .@"struct") @compileError("Unsupported top level type: " ++ @typeName(TopLevel));
 
-    var self: Parser(TopLevel, @TypeOf(reader)) = .{
-        .reader = reader,
+    var self: Parser(TopLevel) = .{
         .allocator = allocator,
         .tmp_allocator = tmp_allocator,
-        .scanner = std.json.Scanner.initStreaming(tmp_allocator),
-        .partial = std.ArrayList(u8).init(tmp_allocator),
+        .scanner_reader = .init(tmp_allocator, reader),
     };
     defer {
-        self.partial.deinit();
-        self.scanner.deinit();
+        self.partial.deinit(tmp_allocator);
+        self.scanner_reader.deinit();
     }
 
     return self.parseTopLevel();
 }
 
-fn Parser(comptime TopLevel: type, comptime Reader: type) type {
+fn Parser(comptime TopLevel: type) type {
     return struct {
         const Self = @This();
 
@@ -31,14 +29,12 @@ fn Parser(comptime TopLevel: type, comptime Reader: type) type {
             std.debug.assert(@typeInfo(TopLevel) == .@"struct");
         }
 
-        reader: Reader,
         allocator: std.mem.Allocator,
         tmp_allocator: std.mem.Allocator,
 
-        scanner: std.json.Scanner,
+        scanner_reader: std.json.Scanner.Reader,
 
-        partial: std.ArrayList(u8),
-        read_buffer: [512]u8 = undefined,
+        partial: std.ArrayList(u8) = .{},
 
         peek_token: ?std.json.Token = null,
 
@@ -88,29 +84,29 @@ fn Parser(comptime TopLevel: type, comptime Reader: type) type {
                         u32 => {
                             if (try self.nextToken() != .array_begin) return error.InvalidToken;
 
-                            var tmp_storage = std.ArrayList(u32).init(self.tmp_allocator);
-                            defer tmp_storage.deinit();
+                            var tmp_storage: std.ArrayList(u32) = .{};
+                            defer tmp_storage.deinit(self.tmp_allocator);
 
                             while (true) {
                                 const token = try self.nextToken();
                                 if (token == .array_end) break;
                                 self.peek_token = token;
-                                try tmp_storage.append(try self.handleNumber(u32));
+                                try tmp_storage.append(self.tmp_allocator, try self.handleNumber(u32));
                             }
                             break :blk try self.allocator.dupe(u32, tmp_storage.items);
                         },
                         else => {
                             if (try self.nextToken() != .array_begin) return error.InvalidToken;
 
-                            var tmp_storage = std.ArrayList(info.child).init(self.tmp_allocator);
-                            defer tmp_storage.deinit();
+                            var tmp_storage: std.ArrayList(info.child) = .{};
+                            defer tmp_storage.deinit(self.tmp_allocator);
 
                             while (true) {
                                 switch (try self.nextToken()) {
                                     .array_end => break,
                                     else => |token| {
                                         self.peek_token = token;
-                                        try tmp_storage.append(try self.innerParse(info.child));
+                                        try tmp_storage.append(self.tmp_allocator, try self.innerParse(info.child));
                                     },
                                 }
                             }
@@ -276,14 +272,14 @@ fn Parser(comptime TopLevel: type, comptime Reader: type) type {
             while (true) {
                 switch (try self.nextToken()) {
                     .string => |str| {
-                        if (str.len != 0) try self.partial.appendSlice(str);
+                        if (str.len != 0) try self.partial.appendSlice(self.tmp_allocator, str);
                         return self.partial.items;
                     },
-                    .partial_string => |partial_str| try self.partial.appendSlice(partial_str),
-                    .partial_string_escaped_1 => |partial_string| try self.partial.appendSlice(&partial_string),
-                    .partial_string_escaped_2 => |partial_string| try self.partial.appendSlice(&partial_string),
-                    .partial_string_escaped_3 => |partial_string| try self.partial.appendSlice(&partial_string),
-                    .partial_string_escaped_4 => |partial_string| try self.partial.appendSlice(&partial_string),
+                    .partial_string => |partial_str| try self.partial.appendSlice(self.tmp_allocator, partial_str),
+                    .partial_string_escaped_1 => |partial_string| try self.partial.appendSlice(self.tmp_allocator, &partial_string),
+                    .partial_string_escaped_2 => |partial_string| try self.partial.appendSlice(self.tmp_allocator, &partial_string),
+                    .partial_string_escaped_3 => |partial_string| try self.partial.appendSlice(self.tmp_allocator, &partial_string),
+                    .partial_string_escaped_4 => |partial_string| try self.partial.appendSlice(self.tmp_allocator, &partial_string),
                     else => return error.InvalidToken,
                 }
             }
@@ -299,14 +295,14 @@ fn Parser(comptime TopLevel: type, comptime Reader: type) type {
             while (true) {
                 switch (try self.nextToken()) {
                     .number => |str| {
-                        if (str.len != 0) try self.partial.appendSlice(str);
+                        if (str.len != 0) try self.partial.appendSlice(self.tmp_allocator, str);
                         return switch (@typeInfo(Number)) {
                             .int => try std.fmt.parseInt(Number, self.partial.items, 0),
                             .float => try std.fmt.parseFloat(Number, self.partial.items),
                             else => @compileError("Not a number"),
                         };
                     },
-                    .partial_number => |partial_str| try self.partial.appendSlice(partial_str),
+                    .partial_number => |partial_str| try self.partial.appendSlice(self.tmp_allocator, partial_str),
                     else => return error.InvalidToken,
                 }
             }
@@ -320,22 +316,7 @@ fn Parser(comptime TopLevel: type, comptime Reader: type) type {
                 return token;
             }
 
-            while (true) {
-                return self.scanner.next() catch |err| switch (err) {
-                    error.BufferUnderrun => {
-                        const size = try self.reader.read(&self.read_buffer);
-                        if (size == 0) {
-                            self.scanner.endInput();
-                            break;
-                        }
-                        self.scanner.feedInput(self.read_buffer[0..size]);
-                        continue;
-                    },
-                    else => return err,
-                };
-            }
-
-            return try self.scanner.next();
+            return self.scanner_reader.next();
         }
     };
 }
