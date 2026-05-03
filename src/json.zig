@@ -34,7 +34,7 @@ fn Parser(comptime TopLevel: type) type {
 
         scanner_reader: std.json.Scanner.Reader,
 
-        partial: std.ArrayList(u8) = .{},
+        partial: std.ArrayList(u8) = .empty,
 
         peek_token: ?std.json.Token = null,
 
@@ -84,7 +84,7 @@ fn Parser(comptime TopLevel: type) type {
                         u32 => {
                             if (try self.nextToken() != .array_begin) return error.InvalidToken;
 
-                            var tmp_storage: std.ArrayList(u32) = .{};
+                            var tmp_storage: std.ArrayList(u32) = .empty;
                             defer tmp_storage.deinit(self.tmp_allocator);
 
                             while (true) {
@@ -98,7 +98,7 @@ fn Parser(comptime TopLevel: type) type {
                         else => {
                             if (try self.nextToken() != .array_begin) return error.InvalidToken;
 
-                            var tmp_storage: std.ArrayList(info.child) = .{};
+                            var tmp_storage: std.ArrayList(info.child) = .empty;
                             defer tmp_storage.deinit(self.tmp_allocator);
 
                             while (true) {
